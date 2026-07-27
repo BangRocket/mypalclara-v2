@@ -1,0 +1,9 @@
+.env
+.venv/
+.mypalace-src/
+.clerk-session.json
+.palace-session.json
+__pycache__/
+build/
+dist/
+*.egg-info/

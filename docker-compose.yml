@@ -1,0 +1,77 @@
+services:
+  mypalclara-db:
+    image: postgres:16-alpine
+    container_name: mypalclara-v2-postgres
+    environment:
+      POSTGRES_USER: mypalclara
+      POSTGRES_PASSWORD: mypalclara
+      POSTGRES_DB: mypalclara
+    volumes:
+      - mypalclara-data:/var/lib/postgresql/data
+    ports:
+      - "127.0.0.1:5444:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U mypalclara -d mypalclara"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  postgres:
+    image: postgres:16-alpine
+    container_name: palace-postgres
+    environment:
+      POSTGRES_USER: palace
+      POSTGRES_PASSWORD: palace
+      POSTGRES_DB: palace
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    ports:
+      - "5443:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U palace -d palace"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  qdrant:
+    image: qdrant/qdrant:latest
+    container_name: palace-qdrant
+    ports:
+      - "6334:6333"
+    volumes:
+      - qdrant-data:/qdrant/storage
+    healthcheck:
+      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/localhost/6333"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  palace:
+    build: ./.mypalace-src
+    container_name: palace-api
+    ports:
+      - "8000:8000"
+    environment:
+      PALACE_DATABASE_URL: postgresql+asyncpg://palace:palace@postgres/palace
+      QDRANT_URL: http://qdrant:6333
+      QDRANT_COLLECTION: palace_memories
+      EMBEDDING_PROVIDER: huggingface
+      EMBEDDING_MODEL: BAAI/bge-large-en-v1.5
+      PALACE_BOOTSTRAP_ADMIN_KEY: ${PALACE_BOOTSTRAP_ADMIN_KEY}
+      LLM_PROVIDER: anthropic
+      PALACE_LLM_BASE_URL: https://clewdr.jorsh.app/code
+      LLM_API_KEY: ${ANTHROPIC_API_KEY}
+      # The clewdr proxy rejects `temperature` on claude-opus-5 (which Palace
+      # always sends); haiku accepts it and suits extraction tasks.
+      LLM_MODEL: claude-haiku-4-5
+      LOG_LEVEL: INFO
+    depends_on:
+      postgres:
+        condition: service_healthy
+      qdrant:
+        condition: service_healthy
+
+volumes:
+  mypalclara-data:
+  postgres-data:
+  qdrant-data:

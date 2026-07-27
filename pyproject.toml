@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "mypalclara"
+version = "0.1.0"
+description = "A personal AI companion with persistent memory"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "httpx>=0.28",
+    "langchain>=1.3",
+    "langchain-anthropic>=1.5",
+    "langgraph>=1.2",
+    "mypalace-client>=0.12",
+    "psycopg[binary]>=3.2",
+    "python-dotenv>=1.2",
+    "textual>=8.2",
+]
+
+[project.scripts]
+mypalclara = "frontend.ui:main"
+
+[tool.setuptools.packages.find]
+include = ["backend*", "frontend*"]
+
+[tool.setuptools.package-data]
+backend = ["workspace/*.md"]

@@ -111,6 +111,7 @@ agent = create_agent(
 config = {"configurable": {"thread_id": "frontend-session"}}
 
 _history_seeded = False
+_reply_lock = asyncio.Lock()
 
 
 async def _seed_history() -> None:
@@ -128,23 +129,24 @@ async def _seed_history() -> None:
 
 async def get_reply(user_text: str) -> str:
     """Send a user message to the agent and return its reply text."""
-    await _seed_history()
-    await palace.record("user", user_text)
+    async with _reply_lock:
+        await _seed_history()
+        await palace.record("user", user_text)
 
-    memory_context = await palace.get_context(user_text)
-    result = await agent.ainvoke(
-        {"messages": [{"role": "user", "content": user_text}]},
-        config=config,
-        context={"memory_context": memory_context or ""},
-    )
-    content = result["messages"][-1].content
-    if isinstance(content, list):  # content blocks -> join text parts
-        reply = "".join(
-            block.get("text", "") for block in content if isinstance(block, dict)
+        memory_context = await palace.get_context(user_text)
+        result = await agent.ainvoke(
+            {"messages": [{"role": "user", "content": user_text}]},
+            config=config,
+            context={"memory_context": memory_context or ""},
         )
-    else:
-        reply = content
+        content = result["messages"][-1].content
+        if isinstance(content, list):  # content blocks -> join text parts
+            reply = "".join(
+                block.get("text", "") for block in content if isinstance(block, dict)
+            )
+        else:
+            reply = content
 
-    await palace.record("assistant", reply)
-    asyncio.create_task(palace.ingest(user_text, reply))
-    return reply
+        await palace.record("assistant", reply)
+        asyncio.create_task(palace.ingest(user_text, reply))
+        return reply

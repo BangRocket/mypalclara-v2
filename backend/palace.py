@@ -130,7 +130,9 @@ async def reset_session() -> None:
     conversation. The old session's messages stay in Palace."""
     global _session_id
     _session_id = None
-    session_store.delete("palace", _user_id())
+    user_id = _user_id()
+    session_store.delete("palace", user_id)
+    session_store.delete("conversation", user_id)
 
 
 async def record(role: str, content: str) -> None:

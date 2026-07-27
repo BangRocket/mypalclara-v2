@@ -21,9 +21,10 @@ import os
 import secrets
 import time
 import webbrowser
+from contextlib import suppress
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, quote, urlparse, urlunparse
 
 import httpx
 from dotenv import load_dotenv
@@ -37,6 +38,9 @@ _LEGACY_SESSION_FILE = _ROOT / ".clerk-session.json"
 REFRESH_SKEW_SECONDS = 30
 LOGIN_TIMEOUT_SECONDS = 300
 SCOPES = "profile email offline_access"
+CLERK_BACKEND_API_URL = "https://api.clerk.com/v1"
+
+_discord_user_id_cache: dict[str, int] = {}
 
 
 class AuthError(Exception):
@@ -87,7 +91,7 @@ def logout() -> None:
     """Clear the local session (best-effort revoke of the refresh token)."""
     session = load_session()
     if session and session.get("refresh_token"):
-        try:
+        with suppress(AuthError, httpx.HTTPError):
             issuer, client_id = _config()
             httpx.post(
                 f"{issuer}/oauth/revoke",
@@ -97,8 +101,6 @@ def logout() -> None:
                 },
                 timeout=10,
             )
-        except Exception:
-            pass  # local logout still succeeds
     session_store.delete("clerk", "current")
 
 
@@ -120,9 +122,9 @@ def _refresh(session: dict) -> dict | None:
         )
         resp.raise_for_status()
         tokens = resp.json()
-    except Exception:
+        session.update(_token_fields(tokens))
+    except (httpx.HTTPError, KeyError, TypeError, ValueError):
         return None
-    session.update(_token_fields(tokens))
     _save_session(session)
     return session
 
@@ -153,6 +155,72 @@ def current_user_id() -> str | None:
     """Clerk user id of the stored session, refreshing if needed."""
     session = ensure_session()
     return session.get("user_id") if session else None
+
+
+def _get_clerk_user(user_id: str) -> dict:
+    """Fetch a user, including social identities, from Clerk's Backend API."""
+    secret_key = os.environ.get("CLERK_SECRET_KEY", "").strip()
+    if not secret_key:
+        raise AuthError("CLERK_SECRET_KEY must be set to resolve Discord identity")
+    try:
+        response = httpx.get(
+            f"{CLERK_BACKEND_API_URL}/users/{quote(user_id, safe='')}",
+            headers={"Authorization": f"Bearer {secret_key}"},
+            timeout=15,
+        )
+        response.raise_for_status()
+        return response.json()
+    except (httpx.HTTPError, ValueError) as exc:
+        raise AuthError("Unable to retrieve the signed-in user from Clerk") from exc
+
+
+def get_discord_user_id(*, refresh: bool = False) -> int | None:
+    """Return the verified Discord ID linked to the current Clerk user."""
+    user_id = current_user_id()
+    if user_id is None:
+        return None
+    if not refresh and user_id in _discord_user_id_cache:
+        return _discord_user_id_cache[user_id]
+
+    clerk_user = _get_clerk_user(user_id)
+    for account in clerk_user.get("external_accounts", []):
+        provider = str(account.get("provider", "")).lower()
+        verification = account.get("verification") or {}
+        provider_user_id = str(account.get("provider_user_id", ""))
+        if (
+            provider in {"discord", "oauth_discord"}
+            and verification.get("status") == "verified"
+            and provider_user_id.isdigit()
+        ):
+            discord_user_id = int(provider_user_id)
+            _discord_user_id_cache[user_id] = discord_user_id
+            return discord_user_id
+    return None
+
+
+def account_portal_user_url() -> str:
+    """Return the Clerk Account Portal profile URL used to link Discord."""
+    configured_url = os.environ.get("CLERK_ACCOUNT_PORTAL_URL", "").strip()
+    if configured_url:
+        configured_url = configured_url.rstrip("/")
+        return (
+            configured_url
+            if configured_url.endswith("/user")
+            else configured_url + "/user"
+        )
+
+    issuer, _ = _config()
+    parsed = urlparse(issuer)
+    host = parsed.netloc.replace(".clerk.accounts.dev", ".accounts.dev")
+    return urlunparse((parsed.scheme, host, "/user", "", "", ""))
+
+
+def open_discord_linking() -> None:
+    """Open Clerk's user profile, where Discord can be linked via OAuth."""
+    if current_user_id() is None:
+        raise AuthError("Sign in with Clerk before linking Discord")
+    if not webbrowser.open(account_portal_user_url()):
+        raise AuthError("Could not open the Clerk Account Portal in a browser")
 
 
 class _CallbackHandler(BaseHTTPRequestHandler):
@@ -204,7 +272,9 @@ def _await_callback(state: str) -> tuple[str, str, str]:
     if result.get("state") != state:
         raise AuthError("Login failed: state mismatch (possible CSRF)")
     if "error" in result:
-        raise AuthError(f"Login failed: {result.get('error_description') or result['error']}")
+        raise AuthError(
+            f"Login failed: {result.get('error_description') or result['error']}"
+        )
     if "code" not in result:
         raise AuthError("Login failed: no authorization code in callback")
     return result["code"], redirect_uri, verifier

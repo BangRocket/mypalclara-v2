@@ -29,7 +29,8 @@ CREATE TABLE IF NOT EXISTS app_session_state (
 """
 
 
-def _connect() -> psycopg.Connection:
+def connect() -> psycopg.Connection:
+    """Open an initialized connection to the application database."""
     connection = psycopg.connect(DATABASE_URL)
     connection.execute(_SCHEMA_SQL)
     return connection
@@ -37,7 +38,7 @@ def _connect() -> psycopg.Connection:
 
 def load(namespace: str, key: str) -> dict | None:
     """Load a JSON object, or None when the key does not exist."""
-    with _connect() as connection:
+    with connect() as connection:
         row = connection.execute(
             "SELECT value FROM app_session_state WHERE namespace = %s AND key = %s",
             (namespace, key),
@@ -47,7 +48,7 @@ def load(namespace: str, key: str) -> dict | None:
 
 def save(namespace: str, key: str, value: dict) -> None:
     """Insert or replace a JSON object."""
-    with _connect() as connection:
+    with connect() as connection:
         connection.execute(
             """
             INSERT INTO app_session_state (namespace, key, value)
@@ -62,7 +63,7 @@ def save(namespace: str, key: str, value: dict) -> None:
 
 def delete(namespace: str, key: str) -> None:
     """Delete a stored object if it exists."""
-    with _connect() as connection:
+    with connect() as connection:
         connection.execute(
             "DELETE FROM app_session_state WHERE namespace = %s AND key = %s",
             (namespace, key),

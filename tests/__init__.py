@@ -1,0 +1,1 @@
+"""MyPalClara tests."""

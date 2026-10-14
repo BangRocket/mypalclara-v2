@@ -10,18 +10,23 @@ readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
     "discord.py>=2.6,<3",
+    "fastapi>=0.116",
     "httpx>=0.28",
     "langchain>=1.3",
     "langchain-anthropic>=1.5",
     "langgraph>=1.2",
     "mypalace-client>=0.12",
+    "playwright>=1.49",
     "psycopg[binary]>=3.2",
     "python-dotenv>=1.2",
     "textual>=8.2",
+    "uvicorn[standard]>=0.35",
+    "websockets>=15",
 ]
 
 [project.scripts]
 mypalclara = "frontend.ui:main"
+mypalclara-server = "backend.server:main"
 
 [tool.setuptools.packages.find]
 include = ["backend*", "frontend*"]

@@ -14,8 +14,43 @@ uv sync
 uv run mypalclara
 ```
 
+On Windows PowerShell, replace `cp` with `Copy-Item .env.example .env`. Everything
+else works the same way, including `uv run` and the Discord backfill script, on
+Linux, macOS, and Windows.
+
 Fill in the required credentials in `.env` before starting the services. The
 configuration file is ignored by Git.
+
+## Memory providers
+
+`MEMORY_PROVIDER=auto` prefers MyPalace and falls back to the hosted Mem0 API
+when Palace is disabled or its health check fails. Set `MEM0_API_KEY` to a
+Mem0 Platform API key to enable that fallback. You can also select `palace`,
+`mem0`, or `off` explicitly:
+
+```env
+MEMORY_PROVIDER=auto
+PALACE_ENABLED=true
+MEM0_ENABLED=true
+MEM0_API_KEY=
+```
+
+The signed-in Clerk user ID scopes memories. `MEMORY_USER_ID` is the fallback
+identity for local scripts or tests that run without a Clerk session.
+
+`mypalclara` automatically starts a long-running server on `127.0.0.1:8765`.
+The Textual console connects to that server and can be closed without stopping
+the agent or Discord bridge. To run the server in the foreground or under a
+service manager instead, use:
+
+```sh
+uv run mypalclara-server
+```
+
+Set `MYPALCLARA_SERVER_URL`, `MYPALCLARA_SERVER_HOST`, and
+`MYPALCLARA_SERVER_PORT` to change the local endpoint. Detached-server output
+is written to `mypalclara-server.log` in the operating system's temporary
+directory by default; override it with `MYPALCLARA_SERVER_LOG`.
 
 ## Discord DM bridge
 
@@ -31,7 +66,7 @@ The bridge reads the verified Discord provider user ID from that user's Clerk
 external accounts. No Discord user ID is stored in `.env`. The user must be able
 to DM the bot. Server messages and DMs from every other user are ignored.
 
-While the UI is running:
+While the background server is running:
 
 - DMs to the bot use the same agent conversation and appear in console history
   with a Discord label and border.

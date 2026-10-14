@@ -1,6 +1,4 @@
-"""Basic AI chat front end built with Textual.
-
-Talks to the LangChain agent in backend/agent.py.
+"""Textual client for the long-running local MyPalClara service.
 
 Run with: uv run mypalclara
 """
@@ -8,13 +6,15 @@ Run with: uv run mypalclara
 import argparse
 import asyncio
 import sys
+from uuid import uuid4
 
+import httpx
 from textual.app import App, ComposeResult
 from textual.containers import VerticalScroll
 from textual.widgets import Footer, Header, Input, Static
 
-from backend import auth, conversation, palace
-from backend.discord_bridge import DiscordBridge
+from backend import auth
+from frontend import server_client
 
 
 class Message(Static):
@@ -71,11 +71,9 @@ class ChatApp(App):
         super().__init__()
         self._who = "?"
         self._memory_status = "off"
+        self._memory_provider = "off"
         self._discord_status = "off"
-        self.discord = DiscordBridge(
-            on_transcript=self._on_discord_transcript,
-            on_status=self._on_discord_status,
-        )
+        self._client_id = str(uuid4())
 
     def compose(self) -> ComposeResult:
         yield Header()
@@ -85,23 +83,26 @@ class ChatApp(App):
 
     async def on_mount(self) -> None:
         self.query_one("#chat-input", Input).focus()
-        memory_on = await palace.available()
         session = auth.load_session() or {}
         self._who = session.get("name") or session.get("email") or "?"
-        self._memory_status = "on" if memory_on else "off"
-        self._discord_status = "connecting" if self.discord.configured else "off"
+        try:
+            health, history = await asyncio.gather(
+                server_client.get_health(), server_client.get_history()
+            )
+        except Exception as exc:  # noqa: BLE001 - show startup errors in the UI
+            self.add_message("ai", f"Unable to connect to the local server: {exc}")
+            return
+
+        self._memory_status = health.get("memory", "off")
+        self._memory_provider = health.get("memory_provider") or self._memory_status
+        self._discord_status = health.get("discord", "off")
         self._refresh_subtitle()
 
-        history = conversation.get_history()
-        if not history and memory_on:
-            legacy_history = await palace.get_recent_messages()
-            conversation.import_legacy_history(legacy_history)
-            history = conversation.get_history()
         for message in history:
             self.add_message(
-                "user" if message.role == "user" else "ai",
-                message.content,
-                source=message.source,
+                "user" if message["role"] == "user" else "ai",
+                message["content"],
+                source=message["source"],
             )
         if history:
             self.add_message(
@@ -110,39 +111,53 @@ class ChatApp(App):
             )
         else:
             greeting = f"Hi {self._who}! I'm Clara. Ask me anything."
-            if not memory_on:
+            if self._memory_status != "on":
                 greeting += (
                     " (Memory service is offline — I won't remember past chats.)"
                 )
             self.add_message("ai", greeting)
 
-        if self.discord.configured:
-            self.run_worker(
-                self.discord.start_bridge(),
-                name="discord-bridge",
-                group="discord",
-                exit_on_error=False,
-            )
+        self.run_worker(
+            self._listen_for_server_events(),
+            name="server-events",
+            group="server",
+            exit_on_error=False,
+        )
 
-    async def on_unmount(self) -> None:
-        await self.discord.close_bridge()
-
-    def add_message(self, sender: str, text: str, source: str = "console") -> None:
+    def add_message(
+        self, sender: str, text: str, source: str = "console"
+    ) -> Message:
         log = self.query_one("#chat-log", VerticalScroll)
-        log.mount(Message(text, sender, source=source))
+        message = Message(text, sender, source=source)
+        log.mount(message)
         log.scroll_end(animate=False)
+        return message
 
-    def _on_discord_transcript(self, role: str, content: str) -> None:
-        sender = "user" if role == "user" else "ai"
-        self.call_later(self.add_message, sender, content, "discord")
+    async def _listen_for_server_events(self) -> None:
+        async for event in server_client.listen_events():
+            event_type = event.get("type")
+            if event_type == "chat_message":
+                if event.get("client_id") == self._client_id:
+                    continue
+                sender = "user" if event.get("role") == "user" else "ai"
+                self.add_message(
+                    sender,
+                    str(event.get("content", "")),
+                    source=str(event.get("source", "console")),
+                )
+            elif event_type == "discord_status":
+                self._discord_status = str(event.get("status", "off"))
+                self._refresh_subtitle()
+            elif event_type == "session_reset":
+                await self._show_session_reset()
 
-    def _on_discord_status(self, status: str) -> None:
-        self._discord_status = status
-        self.call_later(self._refresh_subtitle)
+    async def _show_session_reset(self) -> None:
+        await self.query_one("#chat-log", VerticalScroll).remove_children()
+        self.add_message("ai", "A fresh conversation has started.")
 
     def _refresh_subtitle(self) -> None:
         self.sub_title = (
-            f"{self._who} • memory: {self._memory_status} "
+            f"{self._who} • memory: {self._memory_provider} "
             f"• discord: {self._discord_status}"
         )
 
@@ -156,18 +171,15 @@ class ChatApp(App):
             self.respond(text),
             name="console-response",
             group="console",
-            exclusive=True,
         )
 
     async def respond(self, user_text: str) -> None:
+        placeholder = self.add_message("ai", "Thinking…")
         try:
-            reply = await conversation.get_reply(user_text, source="console")
+            reply = await server_client.send_chat(user_text, self._client_id)
         except Exception as exc:  # noqa: BLE001 - keep the interactive UI alive
             reply = f"Something went wrong: {exc}"
-            self.add_message("ai", reply)
-            return
-        self.add_message("ai", reply)
-        await self.discord.mirror_console_exchange(user_text, reply)
+        placeholder.update(reply)
 
 
 def main() -> None:
@@ -192,11 +204,20 @@ def main() -> None:
     args = parser.parse_args()
 
     if args.logout:
+        if server_client.server_is_ready():
+            try:
+                asyncio.run(server_client.stop_discord())
+            except (httpx.HTTPError, server_client.ServerError):
+                pass
         auth.logout()
         print("Logged out.")
         return
     if args.new_chat:
-        asyncio.run(palace.reset_session())
+        try:
+            server_client.ensure_server()
+            asyncio.run(server_client.reset_session())
+        except (httpx.HTTPError, server_client.ServerError) as exc:
+            sys.exit(f"Unable to start a new chat: {exc}")
         print(
             "Next launch starts a fresh conversation (old history is kept in Palace)."
         )
@@ -219,6 +240,11 @@ def main() -> None:
         except auth.AuthError as exc:
             sys.exit(f"Login failed: {exc}")
     print(f"Signed in as {session.get('email') or session['user_id']}")
+    try:
+        server_client.ensure_server()
+        asyncio.run(server_client.reconnect_discord())
+    except (httpx.HTTPError, server_client.ServerError) as exc:
+        sys.exit(f"Unable to start the local server: {exc}")
     ChatApp().run()
 
 

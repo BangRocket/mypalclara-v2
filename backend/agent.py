@@ -102,7 +102,7 @@ model = init_chat_model(
 
 agent = create_agent(
     model=model,
-    tools=[],
+    tools=load_tools(),
     middleware=[_system_prompt],
     context_schema=AgentContext,
     checkpointer=InMemorySaver(),

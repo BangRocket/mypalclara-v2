@@ -1,4 +1,5 @@
 import sys
+import asyncio
 import unittest
 from types import ModuleType, SimpleNamespace
 from unittest.mock import AsyncMock, Mock, patch
@@ -59,6 +60,7 @@ class DiscordInboundTests(unittest.IsolatedAsyncioTestCase):
             id=123,
             author=SimpleNamespace(id=42, bot=False),
             guild=None,
+            channel=SimpleNamespace(typing=AsyncMock()),
             content="hello from Discord",
             attachments=[],
         )
@@ -88,6 +90,57 @@ class DiscordInboundTests(unittest.IsolatedAsyncioTestCase):
             ],
         )
         bridge._enqueue.assert_called_once_with("hello back")
+        bridge.flush_outbox.assert_awaited_once_with()
+        message.channel.typing.assert_awaited_once_with()
+        await bridge.close_bridge()
+
+    async def test_typing_indicator_refreshes_until_reply_is_sent(self) -> None:
+        bridge = DiscordBridge(lambda role, content: None, lambda status: None)
+        bridge._discord_user_id = 42
+        bridge._token = "token"
+        bridge.flush_outbox = AsyncMock()
+        bridge._enqueue = Mock()
+        channel = SimpleNamespace(typing=AsyncMock())
+        message = SimpleNamespace(
+            id=124,
+            author=SimpleNamespace(id=42, bot=False),
+            guild=None,
+            channel=channel,
+            content="take your time",
+            attachments=[],
+        )
+        finish_reply = asyncio.Event()
+
+        async def slow_reply(*args, **kwargs):
+            await finish_reply.wait()
+            return "finished"
+
+        with (
+            patch(
+                "backend.discord_bridge.chat_store.has_external_message",
+                return_value=False,
+            ),
+            patch(
+                "backend.discord_bridge.conversation.get_reply",
+                side_effect=slow_reply,
+            ),
+            patch(
+                "backend.discord_bridge.DISCORD_TYPING_INTERVAL_SECONDS",
+                0.01,
+            ),
+        ):
+            turn = asyncio.create_task(bridge.on_message(message))
+            for _ in range(20):
+                if channel.typing.await_count >= 2:
+                    break
+                await asyncio.sleep(0.01)
+            self.assertGreaterEqual(channel.typing.await_count, 2)
+            finish_reply.set()
+            await turn
+
+        typing_count = channel.typing.await_count
+        await asyncio.sleep(0.02)
+        self.assertEqual(channel.typing.await_count, typing_count)
         bridge.flush_outbox.assert_awaited_once_with()
         await bridge.close_bridge()
 

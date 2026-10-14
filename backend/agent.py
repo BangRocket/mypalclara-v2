@@ -150,5 +150,13 @@ async def get_reply(user_text: str) -> str:
             reply = content
 
         await palace.record("assistant", reply)
-        asyncio.create_task(palace.ingest(user_text, reply))
+        asyncio.create_task(memory.ingest(user_text, reply))
         return reply
+
+
+async def reset_conversation() -> None:
+    """Move subsequent model calls to a fresh in-memory agent thread."""
+    global _history_seeded
+    async with _reply_lock:
+        config["configurable"]["thread_id"] = str(uuid4())
+        _history_seeded = False

@@ -1,5 +1,6 @@
 """Canonical cross-interface chat transcript and Discord delivery outbox."""
 
+from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import datetime
 
@@ -48,6 +49,19 @@ class ChatMessage:
 
 
 @dataclass(frozen=True, slots=True)
+class ChatMessageWrite:
+    """A transcript message waiting to be persisted."""
+
+    user_id: str
+    conversation_id: str
+    role: str
+    content: str
+    source: str
+    external_id: str | None = None
+    created_at: datetime | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class OutboxMessage:
     id: int
     content: str
@@ -67,21 +81,53 @@ def record_message(
     content: str,
     source: str,
     external_id: str | None = None,
+    created_at: datetime | None = None,
 ) -> bool:
     """Store a transcript message, returning False for a duplicate external ID."""
+    message = ChatMessageWrite(
+        user_id=user_id,
+        conversation_id=conversation_id,
+        role=role,
+        content=content,
+        source=source,
+        external_id=external_id,
+        created_at=created_at,
+    )
+    return record_messages([message]) == 1
+
+
+def record_messages(messages: Iterable[ChatMessageWrite]) -> int:
+    """Store a batch atomically and return the number of inserted messages.
+
+    ``external_id`` makes imports and Discord gateway re-deliveries idempotent.
+    A supplied ``created_at`` is retained for historical backfills.
+    """
+    inserted = 0
     with _connect() as connection:
-        row = connection.execute(
-            """
-            INSERT INTO chat_messages (
-                user_id, conversation_id, role, content, source, external_id
-            )
-            VALUES (%s, %s, %s, %s, %s, %s)
-            ON CONFLICT (source, external_id) DO NOTHING
-            RETURNING id
-            """,
-            (user_id, conversation_id, role, content, source, external_id),
-        ).fetchone()
-    return row is not None
+        for message in messages:
+            row = connection.execute(
+                """
+                INSERT INTO chat_messages (
+                    user_id, conversation_id, role, content, source,
+                    external_id, created_at
+                )
+                VALUES (%s, %s, %s, %s, %s, %s,
+                        COALESCE(%s::timestamptz, CURRENT_TIMESTAMP))
+                ON CONFLICT (source, external_id) DO NOTHING
+                RETURNING id
+                """,
+                (
+                    message.user_id,
+                    message.conversation_id,
+                    message.role,
+                    message.content,
+                    message.source,
+                    message.external_id,
+                    message.created_at,
+                ),
+            ).fetchone()
+            inserted += row is not None
+    return inserted
 
 
 def has_external_message(source: str, external_id: str) -> bool:
@@ -112,6 +158,29 @@ def list_messages(
             ORDER BY created_at, id
             """,
             (user_id, conversation_id, limit),
+        ).fetchall()
+    return [ChatMessage(*row) for row in rows]
+
+
+def search_messages(
+    user_id: str, query: str, limit: int = 20
+) -> list[ChatMessage]:
+    """Return the user's messages containing ``query``, newest first.
+
+    Case-insensitive plain-substring match; ``%`` and ``_`` in the query are
+    treated literally.
+    """
+    pattern = query.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    with _connect() as connection:
+        rows = connection.execute(
+            """
+            SELECT id, role, content, source, created_at
+            FROM chat_messages
+            WHERE user_id = %s AND content ILIKE %s ESCAPE '\\'
+            ORDER BY created_at DESC, id DESC
+            LIMIT %s
+            """,
+            (user_id, f"%{pattern}%", limit),
         ).fetchall()
     return [ChatMessage(*row) for row in rows]
 

@@ -1,5 +1,6 @@
 """Shared conversation flow for console and Discord chat surfaces."""
 
+import asyncio
 import os
 from uuid import uuid4
 
@@ -10,9 +11,16 @@ class DuplicateMessageError(Exception):
     """Raised when Discord redelivers an already processed message."""
 
 
+_conversation_lock = asyncio.Lock()
+
+
 def current_user_id() -> str:
     """Return the signed-in user, with the script/test fallback."""
-    return auth.current_user_id() or os.environ.get("PALACE_USER_ID", "local-user")
+    return (
+        auth.current_user_id()
+        or os.environ.get("MEMORY_USER_ID")
+        or os.environ.get("PALACE_USER_ID", "local-user")
+    )
 
 
 def current_conversation_id(user_id: str | None = None) -> str:
@@ -33,30 +41,31 @@ async def get_reply(
     external_id: str | None = None,
 ) -> str:
     """Record an incoming message, invoke the agent, and record its reply."""
-    from backend.agent import get_reply as get_agent_reply
+    async with _conversation_lock:
+        from backend.agent import get_reply as get_agent_reply
 
-    user_id = current_user_id()
-    conversation_id = current_conversation_id(user_id)
-    inserted = chat_store.record_message(
-        user_id=user_id,
-        conversation_id=conversation_id,
-        role="user",
-        content=user_text,
-        source=source,
-        external_id=external_id,
-    )
-    if not inserted:
-        raise DuplicateMessageError(external_id or "unknown")
+        user_id = current_user_id()
+        conversation_id = current_conversation_id(user_id)
+        inserted = chat_store.record_message(
+            user_id=user_id,
+            conversation_id=conversation_id,
+            role="user",
+            content=user_text,
+            source=source,
+            external_id=external_id,
+        )
+        if not inserted:
+            raise DuplicateMessageError(external_id or "unknown")
 
-    reply = await get_agent_reply(user_text)
-    chat_store.record_message(
-        user_id=user_id,
-        conversation_id=conversation_id,
-        role="assistant",
-        content=reply,
-        source=source,
-    )
-    return reply
+        reply = await get_agent_reply(user_text)
+        chat_store.record_message(
+            user_id=user_id,
+            conversation_id=conversation_id,
+            role="assistant",
+            content=reply,
+            source=source,
+        )
+        return reply
 
 
 def get_history(limit: int = 100) -> list[chat_store.ChatMessage]:

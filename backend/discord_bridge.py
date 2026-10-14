@@ -4,6 +4,7 @@ import asyncio
 import logging
 import os
 from collections.abc import Callable
+from contextlib import suppress
 
 import discord
 
@@ -12,6 +13,7 @@ from backend import auth, chat_store, conversation
 log = logging.getLogger(__name__)
 
 DISCORD_MESSAGE_LIMIT = 2000
+DISCORD_TYPING_INTERVAL_SECONDS = 8.0
 TranscriptCallback = Callable[[str, str], None]
 StatusCallback = Callable[[str], None]
 
@@ -40,6 +42,23 @@ def _split_for_discord(content: str, prefix: str = "") -> list[str]:
         current_prefix = "↳ "
 
     return chunks
+
+
+async def _trigger_typing(channel) -> None:
+    """Send one typing event without allowing Discord errors to fail a turn."""
+    try:
+        await channel.typing()
+    except asyncio.CancelledError:
+        raise
+    except Exception:
+        log.debug("Failed to send Discord typing indicator", exc_info=True)
+
+
+async def _typing_heartbeat(channel) -> None:
+    """Refresh Discord's expiring typing indicator until cancelled."""
+    while True:
+        await asyncio.sleep(DISCORD_TYPING_INTERVAL_SECONDS)
+        await _trigger_typing(channel)
 
 
 class DiscordBridge(discord.Client):
@@ -115,8 +134,17 @@ class DiscordBridge(discord.Client):
         if not user_text:
             return
 
-        self._on_transcript("user", user_text)
+        typing_task: asyncio.Task | None = None
+        channel = getattr(message, "channel", None)
+        if channel is not None:
+            await _trigger_typing(channel)
+            typing_task = asyncio.create_task(
+                _typing_heartbeat(channel),
+                name=f"discord-typing-{external_id}",
+            )
+
         try:
+            self._on_transcript("user", user_text)
             reply = await conversation.get_reply(
                 user_text,
                 source="discord",
@@ -128,10 +156,15 @@ class DiscordBridge(discord.Client):
             self._on_status("error")
             log.exception("Failed to process Discord message %s", external_id)
             return
-
-        self._on_transcript("assistant", reply)
-        self._enqueue(reply)
-        await self.flush_outbox()
+        else:
+            self._on_transcript("assistant", reply)
+            self._enqueue(reply)
+            await self.flush_outbox()
+        finally:
+            if typing_task is not None:
+                typing_task.cancel()
+                with suppress(asyncio.CancelledError):
+                    await typing_task
 
     async def mirror_console_exchange(self, user_text: str, reply: str) -> None:
         """Queue both sides of a console exchange for Discord DM delivery."""

@@ -40,8 +40,43 @@ While the UI is running:
 - Discord message IDs are recorded so reconnects cannot generate duplicate
   agent replies.
 
+The console subscribes to the server over WebSocket, so Discord DMs appear
+live when the console is open and remain in PostgreSQL history when it is not.
+
 Discord exempts bot DMs from the Message Content privileged-intent restriction,
 so this integration requests only the direct-message gateway intent.
+
+### Backfill exported Discord history
+
+DiscordChatExporter JSON files can be imported into the canonical transcript.
+Companion `*_decisions.json` files from the legacy chat cleaner are applied
+automatically, original timestamps are retained, and Discord message IDs make
+repeated runs safe. Add `--ingest-memory` to also run each historical session
+through the active memory provider with inference enabled. This follows
+`MEMORY_PROVIDER`, including Palace's automatic fallback to Mem0, and stores a
+per-user/per-provider checkpoint after every completed session.
+
+Preview an import first, then target the appropriate Clerk user:
+
+```sh
+uv run python scripts/backfill_discord.py \
+  --chats-dir /path/to/old/mypalclara/chats \
+  --dry-run
+
+uv run python scripts/backfill_discord.py \
+  --chats-dir /path/to/old/mypalclara/chats \
+  --user-id user_abc123 \
+  --ingest-memory
+```
+
+Memory inference can incur provider usage costs. Interrupted runs resume from
+their PostgreSQL checkpoints; `--memory-only` resumes memory without scanning
+the transcript for duplicates, while `--reingest-memory` intentionally ignores
+the checkpoints. To populate both providers, run `--memory-only` once with
+`MEMORY_PROVIDER=palace` and once with `MEMORY_PROVIDER=mem0`; their checkpoints
+are independent. Run `uv run python scripts/backfill_discord.py --help` for
+single-file import, custom bot/name mappings, concurrency, and session-splitting
+options.
 
 ## Session commands
 

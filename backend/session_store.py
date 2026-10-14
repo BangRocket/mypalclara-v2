@@ -46,6 +46,16 @@ def load(namespace: str, key: str) -> dict | None:
     return row[0] if row else None
 
 
+def load_namespace(namespace: str) -> dict[str, dict]:
+    """Load every JSON object in a namespace, keyed by its stored key."""
+    with connect() as connection:
+        rows = connection.execute(
+            "SELECT key, value FROM app_session_state WHERE namespace = %s",
+            (namespace,),
+        ).fetchall()
+    return {key: value for key, value in rows}
+
+
 def save(namespace: str, key: str, value: dict) -> None:
     """Insert or replace a JSON object."""
     with connect() as connection:

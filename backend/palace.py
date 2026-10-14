@@ -9,7 +9,8 @@ One Palace session is kept per user in the MyPalClara application database so
 conversation history continues across app restarts.
 ``reset_session`` starts a fresh conversation.
 
-Config comes from .env: PALACE_URL, PALACE_API_KEY, PALACE_USER_ID.
+Config comes from .env: PALACE_ENABLED, PALACE_URL, PALACE_API_KEY, and the
+shared MEMORY_USER_ID fallback (legacy PALACE_USER_ID is still supported).
 """
 
 import json
@@ -35,6 +36,20 @@ _session_id: str | None = None
 _healthy: bool | None = None
 
 
+def _env_flag(name: str, default: bool) -> bool:
+    value = os.environ.get(name)
+    if value is None:
+        return default
+    return value.strip().lower() not in {"0", "false", "no", "off"}
+
+
+def enabled() -> bool:
+    """Return whether MyPalace may be used as a memory provider."""
+    mode = os.environ.get("MEMORY_PROVIDER", "auto").strip().lower()
+    provider_allows_palace = mode not in {"mem0", "off", "none"}
+    return provider_allows_palace and _env_flag("PALACE_ENABLED", True)
+
+
 def _get_client() -> PalaceClient:
     global _client
     if _client is None:
@@ -46,11 +61,14 @@ def _get_client() -> PalaceClient:
 
 
 def _user_id() -> str:
-    """Clerk user id when logged in; PALACE_USER_ID from .env otherwise
-    (fallback for scripts/tests running outside the login-gated TUI)."""
+    """Clerk user id when logged in; configured local identity otherwise."""
     from backend import auth
 
-    return auth.current_user_id() or os.environ.get("PALACE_USER_ID", "local-user")
+    return (
+        auth.current_user_id()
+        or os.environ.get("MEMORY_USER_ID")
+        or os.environ.get("PALACE_USER_ID", "local-user")
+    )
 
 
 def _load_session_state(user_id: str) -> dict | None:
@@ -80,6 +98,8 @@ async def available() -> bool:
     """Health-check Palace. Result is cached per process; a recheck can be
     forced by calling ``reset_health``."""
     global _healthy
+    if not enabled():
+        return False
     if _healthy is None:
         try:
             await _get_client().health()

@@ -4,15 +4,16 @@ Configuration comes from the .env file at the project root:
 CHAT_MODEL, ANTHROPIC_BASE_URL, and ANTHROPIC_API_KEY.
 
 A single thread_id is kept for the process so the conversation
-has memory across messages. Long-term memory (semantic recall +
-session persistence) comes from MyPalace via backend/palace.py;
-the agent works without it if Palace is down.
+has memory across messages. Long-term semantic memory comes from the
+configured provider via backend/memory.py; the agent works without it if no
+provider is available.
 """
 
 import asyncio
 import os
 from pathlib import Path
 from typing import TypedDict
+from uuid import uuid4
 
 from dotenv import load_dotenv
 from langchain.agents import create_agent
@@ -20,7 +21,8 @@ from langchain.agents.middleware import ModelRequest, dynamic_prompt
 from langchain.chat_models import init_chat_model
 from langgraph.checkpoint.memory import InMemorySaver
 
-from backend import palace
+from backend import memory, palace
+from backend.tools import load_tools
 
 load_dotenv(Path(__file__).resolve().parent.parent / ".env")
 
@@ -133,7 +135,7 @@ async def get_reply(user_text: str) -> str:
         await _seed_history()
         await palace.record("user", user_text)
 
-        memory_context = await palace.get_context(user_text)
+        memory_context = await memory.get_context(user_text)
         result = await agent.ainvoke(
             {"messages": [{"role": "user", "content": user_text}]},
             config=config,

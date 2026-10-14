@@ -1,7 +1,7 @@
 # MyPalClara
 
 A Textual chat interface with a LangChain agent, Clerk authentication, and
-persistent memory through MyPalace.
+persistent memory through MyPalace with Mem0 fallback support.
 
 ## Run
 

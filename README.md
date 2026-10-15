@@ -1,6 +1,6 @@
 # MyPalClara
 
-A Textual chat interface with a LangChain agent, Clerk authentication, and
+A Textual chat interface with a GitHub Copilot SDK agent, Clerk authentication, and
 persistent memory through MyPalace with Mem0 fallback support.
 
 ## Run
@@ -20,6 +20,17 @@ Linux, macOS, and Windows.
 
 Fill in the required credentials in `.env` before starting the services. The
 configuration file is ignored by Git.
+
+## Agent runtime
+
+The agent runs on the GitHub Copilot SDK in BYOK mode: `CHAT_MODEL`,
+`ANTHROPIC_BASE_URL`, and `ANTHROPIC_API_KEY` select the model, so no Copilot
+subscription is needed. Each user has one persistent SDK session, stored under
+`COPILOT_HOME` (default `~/.mypalclara/copilot`), so a server restart resumes
+the conversation where it left off. `--new-chat` starts a fresh SDK session;
+the canonical transcript in PostgreSQL is unaffected. Long-term memory is
+injected per turn by a prompt hook, sending only memories the session has not
+already seen.
 
 ## Memory providers
 

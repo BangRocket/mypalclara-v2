@@ -75,6 +75,9 @@ class ServerRuntime:
                 await self.discord_task
         self.discord = None
         self.discord_task = None
+        from backend import runtime as agent_runtime
+
+        await agent_runtime.stop()
 
     async def start_discord(self) -> None:
         if self.discord_task is not None and not self.discord_task.done():
